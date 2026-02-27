@@ -31,6 +31,7 @@ class Config:
     # Barge-in
     interrupt_vad_threshold: float = 0.6
     interrupt_consecutive_chunks: int = 2
+    interrupt_cooldown_ms: int = 800  # ignore audio after interrupt to discard interrupt speech
 
     # TTS
     piper_model_path: str = str(Path.home() / "Models" / "en_US-lessac-high.onnx")

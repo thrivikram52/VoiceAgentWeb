@@ -2,9 +2,8 @@
 
 import asyncio
 import enum
-import json
 import logging
-from collections.abc import Callable
+import time
 
 import numpy as np
 from fastapi import WebSocket
@@ -16,6 +15,9 @@ from server.tts import TextToSpeech
 from server.vad import VoiceActivityDetector
 
 logger = logging.getLogger(__name__)
+
+# Silence gap appended between TTS sentences (in samples at TTS sample rate)
+_SENTENCE_GAP_MS = 250
 
 
 class SessionState(enum.Enum):
@@ -51,6 +53,7 @@ class SessionManager:
         self._pipeline_task: asyncio.Task | None = None
         self._interrupt_event = asyncio.Event()
         self._interrupt_count = 0
+        self._post_interrupt_cooldown = 0.0  # timestamp until which audio is ignored
 
     async def _send_state(self, state: SessionState) -> None:
         """Send state change to client."""
@@ -75,17 +78,17 @@ class SessionManager:
         await self._send_state(SessionState.LISTENING)
 
     async def handle_audio(self, audio_bytes: bytes) -> None:
-        """Process incoming audio chunk from the browser.
+        """Process incoming audio chunk from the browser."""
+        # Post-interrupt cooldown: discard audio to avoid interrupt speech
+        # being treated as new input
+        if time.monotonic() < self._post_interrupt_cooldown:
+            return
 
-        Converts bytes to float32 numpy array and feeds to VAD.
-        """
         chunk = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
-        # Pad or trim to chunk_size for VAD
         if len(chunk) < self.config.chunk_size:
             chunk = np.pad(chunk, (0, self.config.chunk_size - len(chunk)))
         elif len(chunk) > self.config.chunk_size:
-            # Process in chunk_size segments
             for i in range(0, len(chunk), self.config.chunk_size):
                 segment = chunk[i : i + self.config.chunk_size]
                 if len(segment) == self.config.chunk_size:
@@ -113,6 +116,10 @@ class SessionManager:
                     self._pipeline_task.cancel()
                 self._interrupt_count = 0
                 self.vad.reset()
+                # Cooldown: ignore audio for 800ms after interrupt to discard
+                # the interrupt speech (e.g. "wait", "stop") so it doesn't
+                # become the next user input
+                self._post_interrupt_cooldown = time.monotonic() + (self.config.interrupt_cooldown_ms / 1000)
                 await self._send_interrupt()
                 await self._send_state(SessionState.LISTENING)
             return
@@ -147,6 +154,8 @@ class SessionManager:
             await self._send_state(SessionState.SPEAKING)
 
             full_response: list[str] = []
+            is_first_sentence = True
+
             async for sentence in self.llm.chat(result.text):
                 if self._interrupt_event.is_set():
                     break
@@ -159,8 +168,22 @@ class SessionManager:
                 # TTS for this sentence
                 tts_result = await asyncio.to_thread(self.tts.synthesize, sentence)
                 if tts_result is not None and not self._interrupt_event.is_set():
-                    audio_data, _sr = tts_result
-                    await self.ws.send_bytes(audio_data.tobytes())
+                    audio_data, sr = tts_result
+
+                    # Add silence gap between sentences for natural pacing
+                    if not is_first_sentence:
+                        gap_samples = int(sr * _SENTENCE_GAP_MS / 1000)
+                        silence = np.zeros(gap_samples, dtype=np.int16)
+                        audio_with_gap = np.concatenate([silence, audio_data])
+                        await self.ws.send_bytes(audio_with_gap.tobytes())
+                    else:
+                        await self.ws.send_bytes(audio_data.tobytes())
+
+                    is_first_sentence = False
+
+            # Save partial response to LLM history even if interrupted
+            if full_response:
+                self.llm.save_assistant_response(" ".join(full_response))
 
             if not self._interrupt_event.is_set():
                 if full_response:
@@ -171,6 +194,9 @@ class SessionManager:
 
         except asyncio.CancelledError:
             logger.info("Pipeline cancelled (barge-in)")
+            # Still save whatever was generated so LLM has context
+            if full_response:
+                self.llm.save_assistant_response(" ".join(full_response))
         except Exception as e:
             logger.error(f"Pipeline error: {e}")
             await self.ws.send_json({"type": "error", "message": str(e)})

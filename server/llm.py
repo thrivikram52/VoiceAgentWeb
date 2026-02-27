@@ -55,6 +55,11 @@ class LLMClient:
 
         Yields:
             Complete sentences as they become available.
+
+        Note:
+            History is NOT auto-saved by this generator. The caller must
+            call save_assistant_response() with the collected sentences,
+            even if interrupted, to keep conversation context consistent.
         """
         self._history.append({"role": "user", "content": user_message})
         self._trim_history()
@@ -64,7 +69,6 @@ class LLMClient:
             *self._history,
         ]
 
-        full_response: list[str] = []
         buffer = ""
 
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -84,18 +88,21 @@ class LLMClient:
                     buffer += token
                     sentences, buffer = self._extract_sentences(buffer)
                     for sentence in sentences:
-                        full_response.append(sentence)
                         yield sentence
 
         # Yield remaining buffer
         if buffer.strip():
-            full_response.append(buffer.strip())
             yield buffer.strip()
 
-        assistant_message = " ".join(full_response)
-        if assistant_message:
-            self._history.append({"role": "assistant", "content": assistant_message})
-        else:
+    def save_assistant_response(self, text: str) -> None:
+        """Save the assistant's response to history.
+
+        Call this after chat() completes or is interrupted, passing the
+        collected sentences. If text is empty, removes the dangling user message.
+        """
+        if text:
+            self._history.append({"role": "assistant", "content": text})
+        elif self._history and self._history[-1]["role"] == "user":
             self._history.pop()
 
     _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
