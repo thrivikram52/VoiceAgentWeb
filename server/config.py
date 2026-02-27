@@ -16,9 +16,8 @@ class Config:
     ollama_base_url: str = "http://localhost:11434"
     max_conversation_turns: int = 10
     system_prompt: str = (
-        "You are a helpful voice assistant. Keep responses concise "
-        "(1-3 sentences) since you are speaking aloud. Be conversational "
-        "and natural. Do not use markdown formatting."
+        "You are a helpful voice assistant. Keep every response to 1-2 short sentences max. "
+        "Be direct and concise. No filler words. No markdown. Speak naturally."
     )
 
     # Audio
