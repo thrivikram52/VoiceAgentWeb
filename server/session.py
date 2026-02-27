@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 # Silence gap appended between TTS sentences (in samples at TTS sample rate)
 _SENTENCE_GAP_MS = 250
 
+# Minimum audio duration (seconds) to process after bot was recently speaking.
+# Filters out short interrupt words ("wait", "stop") that sneak through.
+_MIN_POST_SPEAK_AUDIO_SECS = 0.8
+
 
 class SessionState(enum.Enum):
     IDLE = "IDLE"
@@ -31,7 +35,7 @@ class SessionManager:
     """Manages one voice conversation session (one per WebSocket connection).
 
     Coordinates the pipeline: incoming audio -> VAD -> STT -> LLM -> TTS -> outgoing audio.
-    Handles barge-in by cancelling in-flight LLM/TTS when speech detected during SPEAKING.
+    Handles barge-in via both server-side VAD and client-side interrupt signals.
     """
 
     def __init__(
@@ -53,34 +57,47 @@ class SessionManager:
         self._pipeline_task: asyncio.Task | None = None
         self._interrupt_event = asyncio.Event()
         self._interrupt_count = 0
-        self._post_interrupt_cooldown = 0.0  # timestamp until which audio is ignored
+        self._post_interrupt_cooldown = 0.0
+        self._last_speak_end = 0.0  # when bot last stopped speaking
 
     async def _send_state(self, state: SessionState) -> None:
-        """Send state change to client."""
         self.state = state
         await self.ws.send_json({"type": "state", "state": state.value})
 
     async def _send_transcript(self, role: str, text: str, final: bool = True) -> None:
-        """Send transcript to client."""
         await self.ws.send_json({
-            "type": "transcript",
-            "role": role,
-            "text": text,
-            "final": final,
+            "type": "transcript", "role": role, "text": text, "final": final,
         })
 
     async def _send_interrupt(self) -> None:
-        """Tell client to stop audio playback."""
         await self.ws.send_json({"type": "interrupt"})
 
     async def start(self) -> None:
-        """Start listening for audio."""
+        await self._send_state(SessionState.LISTENING)
+
+    async def handle_interrupt_from_client(self) -> None:
+        """Handle interrupt signal sent by the browser (client-side detection)."""
+        if self.state != SessionState.SPEAKING:
+            return
+
+        logger.info("Client-side interrupt received")
+        await self._do_interrupt()
+
+    async def _do_interrupt(self) -> None:
+        """Execute interrupt: cancel pipeline, reset state, notify client."""
+        self._interrupt_event.set()
+        if self._pipeline_task and not self._pipeline_task.done():
+            self._pipeline_task.cancel()
+        self._interrupt_count = 0
+        self.vad.reset()
+        self._post_interrupt_cooldown = time.monotonic() + (
+            self.config.interrupt_cooldown_ms / 1000
+        )
+        await self._send_interrupt()
         await self._send_state(SessionState.LISTENING)
 
     async def handle_audio(self, audio_bytes: bytes) -> None:
         """Process incoming audio chunk from the browser."""
-        # Post-interrupt cooldown: discard audio to avoid interrupt speech
-        # being treated as new input
         if time.monotonic() < self._post_interrupt_cooldown:
             return
 
@@ -100,7 +117,7 @@ class SessionManager:
     async def _process_vad_chunk(self, chunk: np.ndarray) -> None:
         """Process a single VAD-sized chunk."""
         if self.state == SessionState.SPEAKING:
-            # Check for barge-in
+            # Server-side barge-in detection (backup — client-side is primary)
             is_speech = self.vad.is_speech(
                 chunk, threshold=self.config.interrupt_vad_threshold
             )
@@ -110,18 +127,8 @@ class SessionManager:
                 self._interrupt_count = 0
 
             if self._interrupt_count >= self.config.interrupt_consecutive_chunks:
-                logger.info("Barge-in detected — interrupting pipeline")
-                self._interrupt_event.set()
-                if self._pipeline_task and not self._pipeline_task.done():
-                    self._pipeline_task.cancel()
-                self._interrupt_count = 0
-                self.vad.reset()
-                # Cooldown: ignore audio for 800ms after interrupt to discard
-                # the interrupt speech (e.g. "wait", "stop") so it doesn't
-                # become the next user input
-                self._post_interrupt_cooldown = time.monotonic() + (self.config.interrupt_cooldown_ms / 1000)
-                await self._send_interrupt()
-                await self._send_state(SessionState.LISTENING)
+                logger.info("Server-side barge-in detected")
+                await self._do_interrupt()
             return
 
         if self.state != SessionState.LISTENING:
@@ -130,7 +137,18 @@ class SessionManager:
         # Normal VAD processing
         audio_segment = self.vad.process_chunk(chunk)
         if audio_segment is not None:
-            # Speech ended — start pipeline
+            audio_duration = len(audio_segment) / self.config.sample_rate
+
+            # Filter out short utterances right after bot was speaking
+            # (likely interrupt words that leaked through cooldown)
+            time_since_speak = time.monotonic() - self._last_speak_end
+            if time_since_speak < 2.0 and audio_duration < _MIN_POST_SPEAK_AUDIO_SECS:
+                logger.info(
+                    f"Discarding short utterance ({audio_duration:.1f}s) "
+                    f"shortly after bot spoke ({time_since_speak:.1f}s ago)"
+                )
+                return
+
             self._interrupt_event.clear()
             self._pipeline_task = asyncio.create_task(
                 self._run_pipeline(audio_segment)
@@ -138,6 +156,7 @@ class SessionManager:
 
     async def _run_pipeline(self, audio: np.ndarray) -> None:
         """Run STT -> LLM -> TTS pipeline for a complete audio segment."""
+        full_response: list[str] = []
         try:
             # --- STT ---
             await self._send_state(SessionState.THINKING)
@@ -153,7 +172,6 @@ class SessionManager:
             # --- LLM -> TTS streaming ---
             await self._send_state(SessionState.SPEAKING)
 
-            full_response: list[str] = []
             is_first_sentence = True
 
             async for sentence in self.llm.chat(result.text):
@@ -181,7 +199,7 @@ class SessionManager:
 
                     is_first_sentence = False
 
-            # Save partial response to LLM history even if interrupted
+            # Save response to history
             if full_response:
                 self.llm.save_assistant_response(" ".join(full_response))
 
@@ -190,14 +208,16 @@ class SessionManager:
                     await self._send_transcript(
                         "assistant", " ".join(full_response), final=True
                     )
+                self._last_speak_end = time.monotonic()
                 await self._send_state(SessionState.LISTENING)
 
         except asyncio.CancelledError:
             logger.info("Pipeline cancelled (barge-in)")
-            # Still save whatever was generated so LLM has context
             if full_response:
                 self.llm.save_assistant_response(" ".join(full_response))
+            self._last_speak_end = time.monotonic()
         except Exception as e:
             logger.error(f"Pipeline error: {e}")
             await self.ws.send_json({"type": "error", "message": str(e)})
+            self._last_speak_end = time.monotonic()
             await self._send_state(SessionState.LISTENING)

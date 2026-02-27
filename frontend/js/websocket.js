@@ -73,6 +73,12 @@ class VoiceWebSocket {
         }
     }
 
+    sendInterrupt() {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: "interrupt" }));
+        }
+    }
+
     disconnect() {
         if (this.ws) {
             this.ws.close();

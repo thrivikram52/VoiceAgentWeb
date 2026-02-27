@@ -3,7 +3,17 @@
  *
  * Uses separate AudioContexts for mic (16kHz) and playback (22050Hz)
  * to avoid sample rate conflicts.
+ *
+ * Client-side interrupt detection: monitors raw mic level during playback.
+ * If the user speaks loudly while TTS is playing, triggers onUserSpeaking
+ * callback so the app can send an interrupt signal to the server.
+ * This is more reliable than server-side detection because browser echo
+ * cancellation can filter out the user's voice from the audio stream.
  */
+
+// Interrupt detection config
+const INTERRUPT_LEVEL_THRESHOLD = 0.03; // raw RMS level to consider "user speaking"
+const INTERRUPT_CONSECUTIVE = 4;         // consecutive loud chunks needed
 
 class AudioManager {
     constructor() {
@@ -11,8 +21,9 @@ class AudioManager {
         this.micContext = null;
         this.stream = null;
         this.workletNode = null;
-        this.onAudioChunk = null; // callback: (Int16Array) => void
-        this.onAudioLevel = null; // callback: (0..1) => void
+        this.onAudioChunk = null;    // (Int16Array) => void
+        this.onAudioLevel = null;    // (0..1) => void
+        this.onUserSpeaking = null;  // () => void — fired when user speaks during playback
 
         // TTS playback — separate context at TTS sample rate
         this.playbackContext = null;
@@ -20,11 +31,18 @@ class AudioManager {
         this._isPlaying = false;
         this._currentSource = null;
         this._gainNode = null;
-        this._playbackSampleRate = 22050; // Piper default
+        this._playbackSampleRate = 22050;
+
+        // Client-side interrupt detection
+        this._interruptCount = 0;
+        this._interruptCooldown = false;
+    }
+
+    get isPlayingTTS() {
+        return this._isPlaying;
     }
 
     async startMic() {
-        // Mic context at 16kHz for whisper.cpp
         this.micContext = new AudioContext({ sampleRate: 16000 });
 
         this.stream = await navigator.mediaDevices.getUserMedia({
@@ -43,11 +61,25 @@ class AudioManager {
 
         this.workletNode.port.onmessage = (event) => {
             const { pcm, level } = event.data;
+
             if (this.onAudioChunk) {
                 this.onAudioChunk(new Int16Array(pcm));
             }
             if (this.onAudioLevel) {
                 this.onAudioLevel(level);
+            }
+
+            // Client-side interrupt detection: check raw mic level during playback
+            if (this._isPlaying && !this._interruptCooldown) {
+                if (level > INTERRUPT_LEVEL_THRESHOLD) {
+                    this._interruptCount++;
+                    if (this._interruptCount >= INTERRUPT_CONSECUTIVE) {
+                        this._interruptCount = 0;
+                        this._triggerInterrupt();
+                    }
+                } else {
+                    this._interruptCount = 0;
+                }
             }
         };
 
@@ -57,6 +89,17 @@ class AudioManager {
         this.playbackContext = new AudioContext({ sampleRate: this._playbackSampleRate });
         this._gainNode = this.playbackContext.createGain();
         this._gainNode.connect(this.playbackContext.destination);
+    }
+
+    _triggerInterrupt() {
+        console.log("Client-side interrupt: user speaking during playback");
+        this.flushPlayback();
+        // Cooldown: don't re-trigger for 1 second
+        this._interruptCooldown = true;
+        setTimeout(() => { this._interruptCooldown = false; }, 1000);
+        if (this.onUserSpeaking) {
+            this.onUserSpeaking();
+        }
     }
 
     stopMic() {
@@ -79,10 +122,6 @@ class AudioManager {
         }
     }
 
-    /**
-     * Queue TTS audio (Int16 PCM) for playback.
-     * @param {ArrayBuffer} pcmBuffer - Raw PCM bytes (int16)
-     */
     queueTTSAudio(pcmBuffer) {
         this._playbackQueue.push(pcmBuffer);
         if (!this._isPlaying) {
@@ -125,15 +164,13 @@ class AudioManager {
         this._currentSource = source;
     }
 
-    /**
-     * Stop all TTS playback immediately (for barge-in).
-     */
     flushPlayback() {
         this._playbackQueue = [];
         this._isPlaying = false;
+        this._interruptCount = 0;
         if (this._currentSource) {
             try {
-                this._currentSource.onended = null; // prevent chain
+                this._currentSource.onended = null;
                 this._currentSource.stop();
                 this._currentSource.disconnect();
             } catch (e) {

@@ -103,6 +103,8 @@ async def websocket_endpoint(ws: WebSocket):
                     data = json.loads(message["text"])
                     if data.get("type") == "config":
                         logger.info(f"Client config: {data}")
+                    elif data.get("type") == "interrupt":
+                        await session.handle_interrupt_from_client()
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

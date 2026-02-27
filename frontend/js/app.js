@@ -67,8 +67,17 @@ audio.onAudioChunk = (int16Array) => {
 };
 
 audio.onAudioLevel = (level) => {
-    const pct = Math.min(level * 500, 100); // Scale for visibility
+    const pct = Math.min(level * 500, 100);
     levelBar.style.width = `${pct}%`;
+};
+
+// Client-side interrupt: user spoke during TTS playback
+audio.onUserSpeaking = () => {
+    socket.sendInterrupt();
+    if (currentAssistantEl) {
+        currentAssistantEl.classList.remove("streaming");
+        currentAssistantEl = null;
+    }
 };
 
 // --- UI ---
