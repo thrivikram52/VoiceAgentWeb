@@ -94,6 +94,8 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         while True:
             message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
             if message["type"] == "websocket.receive":
                 if "bytes" in message and message["bytes"]:
                     await session.handle_audio(message["bytes"])
@@ -101,7 +103,9 @@ async def websocket_endpoint(ws: WebSocket):
                     data = json.loads(message["text"])
                     if data.get("type") == "config":
                         logger.info(f"Client config: {data}")
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
         logger.info("Client disconnected")
 
 
