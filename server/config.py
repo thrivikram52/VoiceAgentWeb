@@ -29,8 +29,8 @@ class Config:
     silence_duration_ms: int = 500
 
     # Barge-in
-    interrupt_vad_threshold: float = 0.85
-    interrupt_consecutive_chunks: int = 3
+    interrupt_vad_threshold: float = 0.6
+    interrupt_consecutive_chunks: int = 2
 
     # TTS
     piper_model_path: str = str(Path.home() / "Models" / "en_US-lessac-high.onnx")

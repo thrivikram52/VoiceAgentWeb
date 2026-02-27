@@ -1,23 +1,31 @@
 /**
  * Audio module — mic capture (PCM 16-bit 16kHz) and TTS playback.
+ *
+ * Uses separate AudioContexts for mic (16kHz) and playback (22050Hz)
+ * to avoid sample rate conflicts.
  */
 
 class AudioManager {
     constructor() {
-        this.audioContext = null;
+        // Mic capture
+        this.micContext = null;
         this.stream = null;
         this.workletNode = null;
         this.onAudioChunk = null; // callback: (Int16Array) => void
         this.onAudioLevel = null; // callback: (0..1) => void
 
-        // TTS playback queue
+        // TTS playback — separate context at TTS sample rate
+        this.playbackContext = null;
         this._playbackQueue = [];
         this._isPlaying = false;
+        this._currentSource = null;
+        this._gainNode = null;
         this._playbackSampleRate = 22050; // Piper default
     }
 
     async startMic() {
-        this.audioContext = new AudioContext({ sampleRate: 16000 });
+        // Mic context at 16kHz for whisper.cpp
+        this.micContext = new AudioContext({ sampleRate: 16000 });
 
         this.stream = await navigator.mediaDevices.getUserMedia({
             audio: {
@@ -29,10 +37,9 @@ class AudioManager {
             },
         });
 
-        // Load AudioWorklet for PCM extraction
-        await this.audioContext.audioWorklet.addModule("/js/pcm-worklet.js");
-        const source = this.audioContext.createMediaStreamSource(this.stream);
-        this.workletNode = new AudioWorkletNode(this.audioContext, "pcm-processor");
+        await this.micContext.audioWorklet.addModule("/js/pcm-worklet.js");
+        const source = this.micContext.createMediaStreamSource(this.stream);
+        this.workletNode = new AudioWorkletNode(this.micContext, "pcm-processor");
 
         this.workletNode.port.onmessage = (event) => {
             const { pcm, level } = event.data;
@@ -45,7 +52,11 @@ class AudioManager {
         };
 
         source.connect(this.workletNode);
-        // Don't connect to destination — we don't want mic echoed to speakers
+
+        // Playback context at TTS sample rate
+        this.playbackContext = new AudioContext({ sampleRate: this._playbackSampleRate });
+        this._gainNode = this.playbackContext.createGain();
+        this._gainNode.connect(this.playbackContext.destination);
     }
 
     stopMic() {
@@ -57,9 +68,14 @@ class AudioManager {
             this.stream.getTracks().forEach((t) => t.stop());
             this.stream = null;
         }
-        if (this.audioContext) {
-            this.audioContext.close();
-            this.audioContext = null;
+        if (this.micContext) {
+            this.micContext.close();
+            this.micContext = null;
+        }
+        this.flushPlayback();
+        if (this.playbackContext) {
+            this.playbackContext.close();
+            this.playbackContext = null;
         }
     }
 
@@ -74,8 +90,8 @@ class AudioManager {
         }
     }
 
-    async _playNext() {
-        if (this._playbackQueue.length === 0) {
+    _playNext() {
+        if (this._playbackQueue.length === 0 || !this.playbackContext) {
             this._isPlaying = false;
             return;
         }
@@ -83,26 +99,28 @@ class AudioManager {
         this._isPlaying = true;
         const pcmBuffer = this._playbackQueue.shift();
 
-        // Convert Int16 PCM to Float32 for Web Audio API
         const int16 = new Int16Array(pcmBuffer);
         const float32 = new Float32Array(int16.length);
         for (let i = 0; i < int16.length; i++) {
             float32[i] = int16[i] / 32768.0;
         }
 
-        // Create AudioBuffer and play
-        const playbackCtx = this.audioContext || new AudioContext();
-        const audioBuffer = playbackCtx.createBuffer(
+        const audioBuffer = this.playbackContext.createBuffer(
             1,
             float32.length,
             this._playbackSampleRate
         );
         audioBuffer.getChannelData(0).set(float32);
 
-        const source = playbackCtx.createBufferSource();
+        const source = this.playbackContext.createBufferSource();
         source.buffer = audioBuffer;
-        source.connect(playbackCtx.destination);
-        source.onended = () => this._playNext();
+        source.connect(this._gainNode);
+        source.onended = () => {
+            if (this._currentSource === source) {
+                this._currentSource = null;
+                this._playNext();
+            }
+        };
         source.start();
         this._currentSource = source;
     }
@@ -115,7 +133,9 @@ class AudioManager {
         this._isPlaying = false;
         if (this._currentSource) {
             try {
+                this._currentSource.onended = null; // prevent chain
                 this._currentSource.stop();
+                this._currentSource.disconnect();
             } catch (e) {
                 // Already stopped
             }
