@@ -1,1 +1,31 @@
-<html><body>placeholder</body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Agent</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Voice Agent</h1>
+            <span id="status" class="status offline">Offline</span>
+        </header>
+
+        <div id="conversation" class="conversation"></div>
+
+        <div class="controls">
+            <div id="state-indicator" class="state-indicator">IDLE</div>
+            <div id="audio-level" class="audio-level">
+                <div id="audio-level-bar" class="audio-level-bar"></div>
+            </div>
+            <button id="mic-btn" class="mic-btn" disabled>Start</button>
+        </div>
+    </div>
+
+    <script src="/js/audio.js"></script>
+    <script src="/js/websocket.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>
