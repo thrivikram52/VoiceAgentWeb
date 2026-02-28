@@ -43,8 +43,15 @@ async def startup():
     logger.info("  Loading STT (whisper.cpp)...")
     stt = await asyncio.to_thread(SpeechToText, model_name=config.whisper_model)
 
-    logger.info("  Loading TTS (Piper)...")
-    tts = await asyncio.to_thread(TextToSpeech, model_path=config.piper_model_path)
+    logger.info(f"  Loading TTS (engine={config.tts_engine})...")
+    tts = await asyncio.to_thread(
+        TextToSpeech,
+        engine=config.tts_engine,
+        piper_model_path=config.piper_model_path,
+        xtts_model_name=config.xtts_model_name,
+        xtts_voice_sample=config.xtts_voice_sample,
+        xtts_language=config.xtts_language,
+    )
 
     logger.info("  Checking Ollama...")
     llm = LLMClient(
@@ -90,6 +97,10 @@ async def websocket_endpoint(ws: WebSocket):
     )
 
     await session.start()
+
+    # Tell client what sample rate to use for TTS playback
+    if tts is not None:
+        await ws.send_json({"type": "tts_config", "sampleRate": tts.sample_rate})
 
     try:
         while True:

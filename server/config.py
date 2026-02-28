@@ -34,7 +34,11 @@ class Config:
     interrupt_cooldown_ms: int = 800  # ignore audio after interrupt to discard interrupt speech
 
     # TTS
+    tts_engine: str = "piper"  # "piper" or "xtts"
     piper_model_path: str = str(Path.home() / "Models" / "en_US-lessac-high.onnx")
+    xtts_model_name: str = "tts_models/multilingual/multi-dataset/xtts_v2"
+    xtts_voice_sample: str = str(Path.home() / "Models" / "voice_sample.wav")
+    xtts_language: str = "en"
 
     # Server
     host: str = "0.0.0.0"

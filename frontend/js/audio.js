@@ -42,6 +42,19 @@ class AudioManager {
         return this._isPlaying;
     }
 
+    setPlaybackSampleRate(rate) {
+        if (rate === this._playbackSampleRate) return;
+        this._playbackSampleRate = rate;
+        // Recreate playback context if already running
+        if (this.playbackContext) {
+            this.flushPlayback();
+            this.playbackContext.close();
+            this.playbackContext = new AudioContext({ sampleRate: rate });
+            this._gainNode = this.playbackContext.createGain();
+            this._gainNode.connect(this.playbackContext.destination);
+        }
+    }
+
     async startMic() {
         this.micContext = new AudioContext({ sampleRate: 16000 });
 

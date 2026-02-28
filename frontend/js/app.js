@@ -56,6 +56,10 @@ socket.onInterrupt = () => {
     }
 };
 
+socket.onTTSConfig = (sampleRate) => {
+    audio.setPlaybackSampleRate(sampleRate);
+};
+
 socket.onError = (msg) => {
     console.error("Server error:", msg);
 };

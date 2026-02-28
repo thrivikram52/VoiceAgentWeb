@@ -10,6 +10,7 @@ class VoiceWebSocket {
         this.onInterrupt = null;     // () => void
         this.onTTSAudio = null;      // (ArrayBuffer) => void
         this.onConnectionChange = null; // (connected: boolean) => void
+        this.onTTSConfig = null;     // (sampleRate: number) => void
         this.onError = null;         // (message: string) => void
     }
 
@@ -50,6 +51,9 @@ class VoiceWebSocket {
                     break;
                 case "interrupt":
                     if (this.onInterrupt) this.onInterrupt();
+                    break;
+                case "tts_config":
+                    if (this.onTTSConfig) this.onTTSConfig(msg.sampleRate);
                     break;
                 case "error":
                     if (this.onError) this.onError(msg.message);
