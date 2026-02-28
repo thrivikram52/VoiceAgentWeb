@@ -64,6 +64,15 @@ socket.onError = (msg) => {
     console.error("Server error:", msg);
 };
 
+socket.onTiming = (stt, llm, tts) => {
+    const lastAssistant = convoEl.querySelector(".message.assistant:last-of-type");
+    if (!lastAssistant) return;
+    const badge = document.createElement("div");
+    badge.className = "latency-badge";
+    badge.textContent = `STT: ${stt}ms | LLM: ${llm}ms | TTS: ${tts}ms`;
+    lastAssistant.after(badge);
+};
+
 // --- Audio callbacks ---
 
 audio.onAudioChunk = (int16Array) => {

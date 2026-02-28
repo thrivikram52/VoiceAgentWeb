@@ -12,6 +12,7 @@ class VoiceWebSocket {
         this.onConnectionChange = null; // (connected: boolean) => void
         this.onTTSConfig = null;     // (sampleRate: number) => void
         this.onError = null;         // (message: string) => void
+        this.onTiming = null;        // (stt_ms, llm_ms, tts_ms) => void
     }
 
     connect() {
@@ -57,6 +58,9 @@ class VoiceWebSocket {
                     break;
                 case "error":
                     if (this.onError) this.onError(msg.message);
+                    break;
+                case "timing":
+                    if (this.onTiming) this.onTiming(msg.stt_ms, msg.llm_ms, msg.tts_ms);
                     break;
             }
         };

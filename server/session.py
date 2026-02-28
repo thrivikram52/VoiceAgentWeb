@@ -157,16 +157,21 @@ class SessionManager:
     async def _run_pipeline(self, audio: np.ndarray) -> None:
         """Run STT -> LLM -> TTS pipeline for a complete audio segment."""
         full_response: list[str] = []
+        stt_ms = 0
+        llm_ms = 0
+        tts_ms = 0
         try:
             # --- STT ---
             await self._send_state(SessionState.THINKING)
 
+            t0 = time.monotonic()
             result = await asyncio.to_thread(self.stt.transcribe, audio)
+            stt_ms = round((time.monotonic() - t0) * 1000)
             if result is None:
                 await self._send_state(SessionState.LISTENING)
                 return
 
-            logger.info(f"STT: {result.text}")
+            logger.info(f"STT: {result.text} ({stt_ms}ms)")
             await self._send_transcript("user", result.text)
 
             # --- LLM -> TTS streaming ---
@@ -178,13 +183,20 @@ class SessionManager:
                 if self._interrupt_event.is_set():
                     break
 
+                if is_first_sentence:
+                    llm_ms = round((time.monotonic() - t0) * 1000) - stt_ms
+
                 full_response.append(sentence)
                 await self._send_transcript(
                     "assistant", " ".join(full_response), final=False
                 )
 
                 # TTS for this sentence
+                t_tts = time.monotonic()
                 tts_result = await asyncio.to_thread(self.tts.synthesize, sentence)
+                if is_first_sentence:
+                    tts_ms = round((time.monotonic() - t_tts) * 1000)
+
                 if tts_result is not None and not self._interrupt_event.is_set():
                     audio_data, sr = tts_result
 
@@ -208,6 +220,12 @@ class SessionManager:
                     await self._send_transcript(
                         "assistant", " ".join(full_response), final=True
                     )
+                    await self.ws.send_json({
+                        "type": "timing",
+                        "stt_ms": stt_ms,
+                        "llm_ms": llm_ms,
+                        "tts_ms": tts_ms,
+                    })
                 self._last_speak_end = time.monotonic()
                 await self._send_state(SessionState.LISTENING)
 
