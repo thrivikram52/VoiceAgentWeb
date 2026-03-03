@@ -17,6 +17,15 @@
 
         <div class="controls">
             <div id="state-indicator" class="state-indicator">IDLE</div>
+            <div class="tts-selector">
+                <label for="tts-model">TTS Model</label>
+                <select id="tts-model">
+                    <option value="piper" selected>Piper</option>
+                    <option value="xtts">XTTS v2</option>
+                    <option value="qwen3">Qwen3 Kids Voice</option>
+                </select>
+                <span id="tts-status" class="tts-status"></span>
+            </div>
             <div id="audio-level" class="audio-level">
                 <div id="audio-level-bar" class="audio-level-bar"></div>
             </div>

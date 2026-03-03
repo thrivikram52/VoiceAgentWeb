@@ -12,8 +12,8 @@
  */
 
 // Interrupt detection config
-const INTERRUPT_LEVEL_THRESHOLD = 0.03; // raw RMS level to consider "user speaking"
-const INTERRUPT_CONSECUTIVE = 4;         // consecutive loud chunks needed
+const INTERRUPT_LEVEL_THRESHOLD = 0.08; // raw RMS level to consider "user speaking"
+const INTERRUPT_CONSECUTIVE = 6;         // consecutive loud chunks needed
 
 class AudioManager {
     constructor() {

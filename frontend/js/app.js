@@ -11,6 +11,8 @@ const statusEl = document.getElementById("status");
 const stateEl = document.getElementById("state-indicator");
 const convoEl = document.getElementById("conversation");
 const levelBar = document.getElementById("audio-level-bar");
+const ttsModelSelect = document.getElementById("tts-model");
+const ttsStatusEl = document.getElementById("tts-status");
 
 let isActive = false;
 let currentAssistantEl = null;
@@ -93,6 +95,41 @@ audio.onUserSpeaking = () => {
     }
 };
 
+// --- TTS model selector ---
+
+ttsModelSelect.addEventListener("change", async () => {
+    const engine = ttsModelSelect.value;
+    ttsStatusEl.textContent = "Loading…";
+    ttsStatusEl.className = "tts-status";
+    ttsModelSelect.disabled = true;
+    micBtn.disabled = true;
+
+    try {
+        const res = await fetch("/api/tts/load", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ engine }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            ttsStatusEl.textContent = data.error || "Failed";
+            ttsStatusEl.className = "tts-status error";
+            return;
+        }
+
+        ttsStatusEl.textContent = "Ready";
+        ttsStatusEl.className = "tts-status ready";
+        setTimeout(() => { ttsStatusEl.textContent = ""; }, 2000);
+    } catch (err) {
+        ttsStatusEl.textContent = "Network error";
+        ttsStatusEl.className = "tts-status error";
+    } finally {
+        ttsModelSelect.disabled = false;
+        micBtn.disabled = false;
+    }
+});
+
 // --- UI ---
 
 function addMessage(role, text, streaming = false) {
@@ -111,6 +148,7 @@ micBtn.addEventListener("click", async () => {
             socket.connect();
             micBtn.textContent = "Stop";
             micBtn.classList.add("active");
+            ttsModelSelect.disabled = true;
             isActive = true;
         } catch (err) {
             console.error("Failed to start:", err);
@@ -121,6 +159,7 @@ micBtn.addEventListener("click", async () => {
         socket.disconnect();
         micBtn.textContent = "Start";
         micBtn.classList.remove("active");
+        ttsModelSelect.disabled = false;
         isActive = false;
         levelBar.style.width = "0%";
         stateEl.textContent = "IDLE";

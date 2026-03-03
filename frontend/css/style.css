@@ -128,6 +128,53 @@ header h1 {
     transition: width 50ms ease;
 }
 
+.tts-selector {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.tts-selector label {
+    font-size: 0.75rem;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.tts-selector select {
+    background: #1a1a1a;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s ease;
+}
+
+.tts-selector select:hover:not(:disabled) {
+    border-color: #555;
+}
+
+.tts-selector select:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.tts-status {
+    font-size: 0.7rem;
+    color: #facc15;
+}
+
+.tts-status.ready {
+    color: #4ade80;
+}
+
+.tts-status.error {
+    color: #f87171;
+}
+
 .latency-badge {
     font-size: 0.7rem;
     color: #6b7280;

@@ -3,6 +3,7 @@
 import asyncio
 import enum
 import logging
+import queue as thread_queue
 import time
 
 import numpy as np
@@ -21,7 +22,7 @@ _SENTENCE_GAP_MS = 250
 
 # Minimum audio duration (seconds) to process after bot was recently speaking.
 # Filters out short interrupt words ("wait", "stop") that sneak through.
-_MIN_POST_SPEAK_AUDIO_SECS = 0.8
+_MIN_POST_SPEAK_AUDIO_SECS = 1.2
 
 
 class SessionState(enum.Enum):
@@ -154,6 +155,40 @@ class SessionManager:
                 self._run_pipeline(audio_segment)
             )
 
+    async def _stream_tts(self, sentence: str, is_first: bool) -> None:
+        """Stream TTS audio chunks to the client as they're generated."""
+        q: thread_queue.Queue[tuple[np.ndarray, int] | None] = thread_queue.Queue()
+
+        def _produce():
+            for chunk in self.tts.synthesize_streaming(sentence):
+                q.put(chunk)
+            q.put(None)
+
+        loop = asyncio.get_event_loop()
+        producer = loop.run_in_executor(None, _produce)
+
+        first_chunk = True
+        sr = self.tts.sample_rate
+        while True:
+            chunk = await asyncio.to_thread(q.get)
+            if chunk is None:
+                break
+            if self._interrupt_event.is_set():
+                break
+
+            audio_data, sr = chunk
+
+            # Add silence gap before first chunk of non-first sentences
+            if first_chunk and not is_first:
+                gap_samples = int(sr * _SENTENCE_GAP_MS / 1000)
+                silence = np.zeros(gap_samples, dtype=np.int16)
+                audio_data = np.concatenate([silence, audio_data])
+
+            await self.ws.send_bytes(audio_data.tobytes())
+            first_chunk = False
+
+        await producer
+
     async def _run_pipeline(self, audio: np.ndarray) -> None:
         """Run STT -> LLM -> TTS pipeline for a complete audio segment."""
         full_response: list[str] = []
@@ -193,23 +228,32 @@ class SessionManager:
 
                 # TTS for this sentence
                 t_tts = time.monotonic()
-                tts_result = await asyncio.to_thread(self.tts.synthesize, sentence)
-                if is_first_sentence:
-                    tts_ms = round((time.monotonic() - t_tts) * 1000)
 
-                if tts_result is not None and not self._interrupt_event.is_set():
-                    audio_data, sr = tts_result
-
-                    # Add silence gap between sentences for natural pacing
-                    if not is_first_sentence:
-                        gap_samples = int(sr * _SENTENCE_GAP_MS / 1000)
-                        silence = np.zeros(gap_samples, dtype=np.int16)
-                        audio_with_gap = np.concatenate([silence, audio_data])
-                        await self.ws.send_bytes(audio_with_gap.tobytes())
-                    else:
-                        await self.ws.send_bytes(audio_data.tobytes())
-
+                if self.tts.supports_streaming:
+                    await self._stream_tts(sentence, is_first_sentence)
+                    if is_first_sentence:
+                        tts_ms = round((time.monotonic() - t_tts) * 1000)
                     is_first_sentence = False
+                else:
+                    tts_result = await asyncio.to_thread(
+                        self.tts.synthesize, sentence
+                    )
+                    if is_first_sentence:
+                        tts_ms = round((time.monotonic() - t_tts) * 1000)
+
+                    if tts_result is not None and not self._interrupt_event.is_set():
+                        audio_data, sr = tts_result
+
+                        # Add silence gap between sentences for natural pacing
+                        if not is_first_sentence:
+                            gap_samples = int(sr * _SENTENCE_GAP_MS / 1000)
+                            silence = np.zeros(gap_samples, dtype=np.int16)
+                            audio_with_gap = np.concatenate([silence, audio_data])
+                            await self.ws.send_bytes(audio_with_gap.tobytes())
+                        else:
+                            await self.ws.send_bytes(audio_data.tobytes())
+
+                        is_first_sentence = False
 
             # Save response to history
             if full_response:
