@@ -22,7 +22,7 @@ _SENTENCE_GAP_MS = 250
 
 # Minimum audio duration (seconds) to process after bot was recently speaking.
 # Filters out short interrupt words ("wait", "stop") that sneak through.
-_MIN_POST_SPEAK_AUDIO_SECS = 1.2
+_MIN_POST_SPEAK_AUDIO_SECS = 1.5
 
 
 class SessionState(enum.Enum):
@@ -143,7 +143,7 @@ class SessionManager:
             # Filter out short utterances right after bot was speaking
             # (likely interrupt words that leaked through cooldown)
             time_since_speak = time.monotonic() - self._last_speak_end
-            if time_since_speak < 2.0 and audio_duration < _MIN_POST_SPEAK_AUDIO_SECS:
+            if time_since_speak < 3.0 and audio_duration < _MIN_POST_SPEAK_AUDIO_SECS:
                 logger.info(
                     f"Discarding short utterance ({audio_duration:.1f}s) "
                     f"shortly after bot spoke ({time_since_speak:.1f}s ago)"
